@@ -10,6 +10,10 @@ export type TravelNode = {
   desc?: string;
 };
 
+export type RouteStrategy = "shortest" | "fastest" | "least_climb" | "fewest_transfers" | "photo";
+
+export const DEFAULT_STRATEGY: RouteStrategy = "shortest";
+
 export type PathResult = {
   startId: string;
   endId: string;
@@ -17,6 +21,11 @@ export type PathResult = {
   pathNodeIds: string[];
   pathNodes: TravelNode[];
   segmentDistanceMeters: number[];
+  strategy?: string;
+  strategyLabel?: string;
+  totalTimeMinutes?: number;
+  totalClimbMeters?: number;
+  totalTransfers?: number;
 };
 
 type State = {
@@ -24,6 +33,7 @@ type State = {
   nodesLoading: boolean;
   startId?: string;
   endId?: string;
+  strategy: RouteStrategy;
   route?: PathResult;
   routeLoading: boolean;
   selectedNodeId?: string;
@@ -33,6 +43,7 @@ type Actions = {
   loadNodes: () => Promise<void>;
   setStartId: (id?: string) => void;
   setEndId: (id?: string) => void;
+  setStrategy: (strategy: RouteStrategy) => void;
   swap: () => void;
   clear: () => void;
   setSelectedNodeId: (id?: string) => void;
@@ -44,6 +55,7 @@ const apiBase = import.meta.env.VITE_API_BASE || "/api";
 export const useTravelStore = create<State & Actions>((set, get) => ({
   nodes: [],
   nodesLoading: false,
+  strategy: DEFAULT_STRATEGY,
   routeLoading: false,
 
   loadNodes: async () => {
@@ -54,7 +66,7 @@ export const useTravelStore = create<State & Actions>((set, get) => ({
       if (!res.ok) throw new Error("nodes_fetch_failed");
       const data = await res.json();
       if (!Array.isArray(data)) throw new Error("nodes_payload_invalid");
-      const nodes = (data as any[])
+      const nodes = (data as Array<Record<string, unknown>>)
         .map((raw) => {
           const id = String(raw?.id ?? "").trim();
           const name = String(raw?.name ?? "").trim();
@@ -77,22 +89,32 @@ export const useTravelStore = create<State & Actions>((set, get) => ({
   setEndId: (id) => set({ endId: id, route: undefined }),
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
 
+  // 切换策略时若起终点已齐全，直接按新策略重新规划
+  setStrategy: (strategy) => {
+    set({ strategy, route: undefined });
+    const { startId, endId } = get();
+    if (startId && endId) {
+      void get().fetchRoute();
+    }
+  },
+
   swap: () => {
     const { startId, endId } = get();
     set({ startId: endId, endId: startId, route: undefined });
   },
 
-  clear: () => set({ startId: undefined, endId: undefined, route: undefined, selectedNodeId: undefined }),
+  clear: () =>
+    set({ startId: undefined, endId: undefined, route: undefined, selectedNodeId: undefined, strategy: DEFAULT_STRATEGY }),
 
   fetchRoute: async () => {
-    const { startId, endId } = get();
+    const { startId, endId, strategy } = get();
     if (!startId || !endId) {
       notification.warning({ message: "请选择起点与终点" });
       return;
     }
     set({ routeLoading: true });
     try {
-      const qs = new URLSearchParams({ from: startId, to: endId });
+      const qs = new URLSearchParams({ from: startId, to: endId, strategy });
       const res = await fetch(`${apiBase}/path?${qs.toString()}`);
       const data = await res.json();
       if (!res.ok) {

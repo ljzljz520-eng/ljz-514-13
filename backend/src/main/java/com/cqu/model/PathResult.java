@@ -10,6 +10,16 @@ public class PathResult {
     private List<Node> pathNodes;
     private List<Double> segmentDistanceMeters;
 
+    /** 本次规划使用的策略代码与展示名 */
+    private String strategy;
+    private String strategyLabel;
+    /** 沿路径累计的通行时间（分钟） */
+    private double totalTimeMinutes;
+    /** 沿路径累计的爬升高度（米） */
+    private double totalClimbMeters;
+    /** 沿路径累计的换乘次数 */
+    private int totalTransfers;
+
     public PathResult() {
     }
 
@@ -69,5 +79,44 @@ public class PathResult {
     public void setSegmentDistanceMeters(List<Double> segmentDistanceMeters) {
         this.segmentDistanceMeters = segmentDistanceMeters;
     }
-}
 
+    public String getStrategy() {
+        return strategy;
+    }
+
+    public void setStrategy(String strategy) {
+        this.strategy = strategy;
+    }
+
+    public String getStrategyLabel() {
+        return strategyLabel;
+    }
+
+    public void setStrategyLabel(String strategyLabel) {
+        this.strategyLabel = strategyLabel;
+    }
+
+    public double getTotalTimeMinutes() {
+        return totalTimeMinutes;
+    }
+
+    public void setTotalTimeMinutes(double totalTimeMinutes) {
+        this.totalTimeMinutes = totalTimeMinutes;
+    }
+
+    public double getTotalClimbMeters() {
+        return totalClimbMeters;
+    }
+
+    public void setTotalClimbMeters(double totalClimbMeters) {
+        this.totalClimbMeters = totalClimbMeters;
+    }
+
+    public int getTotalTransfers() {
+        return totalTransfers;
+    }
+
+    public void setTotalTransfers(int totalTransfers) {
+        this.totalTransfers = totalTransfers;
+    }
+}

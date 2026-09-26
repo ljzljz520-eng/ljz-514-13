@@ -3,6 +3,7 @@ package com.cqu.service;
 import com.cqu.model.Node;
 import com.cqu.model.Edge;
 import com.cqu.model.PathResult;
+import com.cqu.model.RouteStrategy;
 
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -14,6 +15,15 @@ import java.util.PriorityQueue;
 import java.util.Set;
 
 public class GraphService {
+    /** 步行速度约 4.5 km/h，缺少时间数据时按距离估算耗时 */
+    private static final double WALK_METERS_PER_MINUTE = 75.0;
+    /** 少爬坡策略：每米爬升等价于 40 米平路的代价 */
+    private static final double CLIMB_PENALTY_PER_METER = 40.0;
+    /** 少换乘策略：一次换乘等价于 10 公里的代价 */
+    private static final double TRANSFER_PENALTY_METERS = 10000.0;
+    /** 适合拍照策略：拍照指数每点让边权获得约 1/(1+0.2*score) 的折扣 */
+    private static final double PHOTO_DISCOUNT_PER_POINT = 0.2;
+
     private final Map<String, Node> nodes;
     private final Map<String, List<Neighbor>> adjacency;
 
@@ -35,44 +45,33 @@ public class GraphService {
         return nodes.values().stream().sorted(Comparator.comparing(Node::getName)).toList();
     }
 
+    /**
+     * 原有的最短路径入口，行为保持不变（等价于 SHORTEST 策略）。
+     */
     public PathResult shortestPath(String fromId, String toId) {
+        return shortestPath(fromId, toId, RouteStrategy.SHORTEST);
+    }
+
+    /**
+     * 按策略规划路线。策略只影响边的权重取值，Dijkstra 算法本身不变。
+     */
+    public PathResult shortestPath(String fromId, String toId, RouteStrategy strategy) {
+        RouteStrategy effective = strategy == null ? RouteStrategy.SHORTEST : strategy;
         if (fromId == null || toId == null || !nodes.containsKey(fromId) || !nodes.containsKey(toId)) {
             throw new IllegalArgumentException("起点或终点不存在");
         }
         if (fromId.equals(toId)) {
             List<String> ids = List.of(fromId);
             List<Node> ns = List.of(nodes.get(fromId));
-            return new PathResult(fromId, toId, 0.0, ids, ns, List.of());
+            PathResult r = new PathResult(fromId, toId, 0.0, ids, ns, List.of());
+            applyStrategyMeta(r, effective, 0.0, 0.0, 0);
+            return r;
         }
 
+        EdgeWeigher weigher = weigherFor(effective);
         Map<String, Double> dist = new HashMap<>();
         Map<String, String> prev = new HashMap<>();
-        PriorityQueue<State> pq = new PriorityQueue<>(Comparator.comparingDouble(s -> s.distance));
-
-        for (String id : nodes.keySet()) {
-            dist.put(id, Double.POSITIVE_INFINITY);
-        }
-        dist.put(fromId, 0.0);
-        pq.add(new State(fromId, 0.0));
-
-        while (!pq.isEmpty()) {
-            State cur = pq.poll();
-            if (cur.distance > dist.get(cur.id)) {
-                continue;
-            }
-            if (cur.id.equals(toId)) {
-                break;
-            }
-            List<Neighbor> neighbors = adjacency.getOrDefault(cur.id, List.of());
-            for (Neighbor nb : neighbors) {
-                double nd = cur.distance + nb.weightMeters;
-                if (nd < dist.get(nb.toId)) {
-                    dist.put(nb.toId, nd);
-                    prev.put(nb.toId, cur.id);
-                    pq.add(new State(nb.toId, nd));
-                }
-            }
-        }
+        dijkstra(fromId, toId, weigher, dist, prev);
 
         if (!prev.containsKey(toId)) {
             throw new IllegalStateException("未找到可达路径");
@@ -92,23 +91,108 @@ public class GraphService {
 
         List<Node> pathNodes = pathIds.stream().map(nodes::get).toList();
         List<Double> segments = new ArrayList<>();
-        double total = dist.getOrDefault(toId, Double.POSITIVE_INFINITY);
+        double totalDistance = 0.0;
+        double totalTime = 0.0;
+        double totalClimb = 0.0;
+        int totalTransfers = 0;
         for (int i = 1; i < pathNodes.size(); i++) {
             Node a = pathNodes.get(i - 1);
             Node b = pathNodes.get(i);
-            segments.add(weightBetween(a.getId(), b.getId(), a.getLat(), a.getLng(), b.getLat(), b.getLng()));
+            Neighbor nb = findNeighbor(a.getId(), b.getId());
+            double segMeters = nb != null
+                    ? nb.weightMeters
+                    : GeoUtils.haversineMeters(a.getLat(), a.getLng(), b.getLat(), b.getLng());
+            segments.add(segMeters);
+            totalDistance += segMeters;
+            totalTime += nb != null ? nb.timeMinutes : segMeters / WALK_METERS_PER_MINUTE;
+            totalClimb += nb != null ? nb.climbMeters : 0.0;
+            totalTransfers += nb != null ? nb.transfers : 0;
         }
 
-        return new PathResult(fromId, toId, total, pathIds, pathNodes, segments);
+        PathResult r = new PathResult(fromId, toId, totalDistance, pathIds, pathNodes, segments);
+        applyStrategyMeta(r, effective, totalTime, totalClimb, totalTransfers);
+        return r;
     }
 
-    private double weightBetween(String fromId, String toId, double fromLat, double fromLng, double toLat, double toLng) {
-        for (Neighbor nb : adjacency.getOrDefault(fromId, List.of())) {
-            if (nb.toId.equals(toId)) {
-                return nb.weightMeters;
+    /**
+     * 标准 Dijkstra。与原始实现唯一区别：边权由 weigher 提供，
+     * SHORTEST 策略下 weigher 返回 nb.weightMeters，逻辑与原来完全一致。
+     */
+    private void dijkstra(String fromId, String toId, EdgeWeigher weigher,
+                          Map<String, Double> dist, Map<String, String> prev) {
+        PriorityQueue<State> pq = new PriorityQueue<>(Comparator.comparingDouble(s -> s.distance));
+
+        for (String id : nodes.keySet()) {
+            dist.put(id, Double.POSITIVE_INFINITY);
+        }
+        dist.put(fromId, 0.0);
+        pq.add(new State(fromId, 0.0));
+
+        while (!pq.isEmpty()) {
+            State cur = pq.poll();
+            if (cur.distance > dist.get(cur.id)) {
+                continue;
+            }
+            if (cur.id.equals(toId)) {
+                break;
+            }
+            List<Neighbor> neighbors = adjacency.getOrDefault(cur.id, List.of());
+            for (Neighbor nb : neighbors) {
+                double nd = cur.distance + weigher.weightOf(cur.id, nb);
+                if (nd < dist.get(nb.toId)) {
+                    dist.put(nb.toId, nd);
+                    prev.put(nb.toId, cur.id);
+                    pq.add(new State(nb.toId, nd));
+                }
             }
         }
-        return GeoUtils.haversineMeters(fromLat, fromLng, toLat, toLng);
+    }
+
+    /**
+     * 各策略的边权函数，均保证非负（Dijkstra 前提）。
+     */
+    private EdgeWeigher weigherFor(RouteStrategy strategy) {
+        switch (strategy) {
+            case FASTEST:
+                return (fromId, nb) -> nb.timeMinutes;
+            case LEAST_CLIMB:
+                return (fromId, nb) -> nb.climbMeters * CLIMB_PENALTY_PER_METER + nb.weightMeters;
+            case FEWEST_TRANSFERS:
+                return (fromId, nb) -> nb.transfers * TRANSFER_PENALTY_METERS + nb.weightMeters;
+            case PHOTO:
+                return (fromId, nb) -> {
+                    double score = (photoScoreOf(fromId) + photoScoreOf(nb.toId)) / 2.0;
+                    return nb.weightMeters / (1.0 + PHOTO_DISCOUNT_PER_POINT * score);
+                };
+            case SHORTEST:
+            default:
+                return (fromId, nb) -> nb.weightMeters;
+        }
+    }
+
+    private double photoScoreOf(String id) {
+        Node n = nodes.get(id);
+        if (n == null || n.getPhotoScore() == null) {
+            return 0.0;
+        }
+        return Math.max(0.0, n.getPhotoScore());
+    }
+
+    private Neighbor findNeighbor(String fromId, String toId) {
+        for (Neighbor nb : adjacency.getOrDefault(fromId, List.of())) {
+            if (nb.toId.equals(toId)) {
+                return nb;
+            }
+        }
+        return null;
+    }
+
+    private static void applyStrategyMeta(PathResult r, RouteStrategy s, double timeMinutes, double climbMeters, int transfers) {
+        r.setStrategy(s.getCode());
+        r.setStrategyLabel(s.getLabel());
+        r.setTotalTimeMinutes(Math.round(timeMinutes * 10.0) / 10.0);
+        r.setTotalClimbMeters(Math.round(climbMeters * 10.0) / 10.0);
+        r.setTotalTransfers(transfers);
     }
 
     private static Map<String, List<Neighbor>> buildGraph(Map<String, Node> nodes) {
@@ -171,9 +255,12 @@ public class GraphService {
             double w = e.getDistanceMeters() != null
                     ? e.getDistanceMeters()
                     : GeoUtils.haversineMeters(a.getLat(), a.getLng(), b.getLat(), b.getLng());
+            double time = e.getTimeMinutes() != null ? e.getTimeMinutes() : w / WALK_METERS_PER_MINUTE;
+            double climb = e.getClimbMeters() != null ? e.getClimbMeters() : 0.0;
+            int transfers = e.getTransfers() != null ? e.getTransfers() : 0;
 
-            adj.get(from).add(new Neighbor(to, w));
-            adj.get(to).add(new Neighbor(from, w));
+            adj.get(from).add(new Neighbor(to, w, time, climb, transfers));
+            adj.get(to).add(new Neighbor(from, w, time, climb, transfers));
         }
 
         boolean ensure = Boolean.parseBoolean(System.getenv().getOrDefault("GRAPH_ENSURE_CONNECTIVITY", "true"));
@@ -238,13 +325,28 @@ public class GraphService {
         return a.compareTo(b) < 0 ? a + "::" + b : b + "::" + a;
     }
 
+    /** 策略权重函数：给定当前节点与出边，返回该边在本策略下的代价（非负）。 */
+    private interface EdgeWeigher {
+        double weightOf(String fromId, Neighbor edge);
+    }
+
     private static final class Neighbor {
         private final String toId;
         private final double weightMeters;
+        private final double timeMinutes;
+        private final double climbMeters;
+        private final int transfers;
 
         private Neighbor(String toId, double weightMeters) {
+            this(toId, weightMeters, weightMeters / WALK_METERS_PER_MINUTE, 0.0, 0);
+        }
+
+        private Neighbor(String toId, double weightMeters, double timeMinutes, double climbMeters, int transfers) {
             this.toId = toId;
             this.weightMeters = weightMeters;
+            this.timeMinutes = timeMinutes;
+            this.climbMeters = climbMeters;
+            this.transfers = transfers;
         }
     }
 

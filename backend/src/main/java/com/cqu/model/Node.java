@@ -27,16 +27,25 @@ public class Node {
     @Column(name = "description", length = 2000)
     private String desc;
 
+    /** 拍照指数（0-10），用于"适合拍照"策略，可空 */
+    @Column(name = "photo_score")
+    private Double photoScore;
+
     public Node() {
     }
 
     public Node(String id, String name, double lat, double lng, String type, String desc) {
+        this(id, name, lat, lng, type, desc, null);
+    }
+
+    public Node(String id, String name, double lat, double lng, String type, String desc, Double photoScore) {
         this.id = id;
         this.name = name;
         this.lat = lat;
         this.lng = lng;
         this.type = type;
         this.desc = desc;
+        this.photoScore = photoScore;
     }
 
     public String getId() {
@@ -85,5 +94,13 @@ public class Node {
 
     public void setDesc(String desc) {
         this.desc = desc;
+    }
+
+    public Double getPhotoScore() {
+        return photoScore;
+    }
+
+    public void setPhotoScore(Double photoScore) {
+        this.photoScore = photoScore;
     }
 }

@@ -1,6 +1,7 @@
 package com.cqu.handler;
 
 import com.cqu.model.PathResult;
+import com.cqu.model.RouteStrategy;
 import com.cqu.service.GraphService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.sun.net.httpserver.Headers;
@@ -55,7 +56,14 @@ public class RequestHandler {
                 writeJson(exchange, 400, Map.of("error", "缺少必填参数：from、to"));
                 return;
             }
-            PathResult result = graphService.shortestPath(from, to);
+            RouteStrategy strategy;
+            try {
+                strategy = RouteStrategy.fromCode(q.get("strategy"));
+            } catch (IllegalArgumentException e) {
+                writeJson(exchange, 400, Map.of("error", e.getMessage()));
+                return;
+            }
+            PathResult result = graphService.shortestPath(from, to, strategy);
             writeJson(exchange, 200, result);
         } catch (IllegalArgumentException e) {
             writeJson(exchange, 400, Map.of("error", e.getMessage()));

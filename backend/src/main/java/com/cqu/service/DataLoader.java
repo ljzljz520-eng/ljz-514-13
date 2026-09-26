@@ -68,7 +68,8 @@ public class DataLoader {
 
                 String type = readColOrNull(row, index, "type");
                 String desc = readColOrNull(row, index, "desc");
-                nodes.add(new Node(id.trim(), name == null ? "" : name.trim(), lat, lng, type, desc));
+                Double photoScore = readDoubleOrNull(row, index, "photo_score");
+                nodes.add(new Node(id.trim(), name == null ? "" : name.trim(), lat, lng, type, desc, photoScore));
             }
         } catch (Exception e) {
             throw new IllegalStateException("读取 nodes.csv 失败", e);
@@ -128,7 +129,11 @@ public class DataLoader {
                     dist = readDoubleOrNull(row, index, "weightMeters");
                 }
 
-                edges.add(new Edge(from.trim(), to.trim(), dist));
+                Double time = readDoubleOrNull(row, index, "time_minutes");
+                Double climb = readDoubleOrNull(row, index, "climb_meters");
+                Integer transfers = readIntOrNull(row, index, "transfers");
+
+                edges.add(new Edge(from.trim(), to.trim(), dist, time, climb, transfers));
             }
 
             return edges;
@@ -172,6 +177,22 @@ public class DataLoader {
             return Double.parseDouble(raw);
         } catch (NumberFormatException e) {
             return null;
+        }
+    }
+
+    private static Integer readIntOrNull(String[] row, Map<String, Integer> index, String key) {
+        String raw = readColOrNull(row, index, key);
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(raw);
+        } catch (NumberFormatException e) {
+            try {
+                return (int) Math.round(Double.parseDouble(raw));
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
         }
     }
 }
