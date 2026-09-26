@@ -128,7 +128,18 @@ public class DataLoader {
                     dist = readDoubleOrNull(row, index, "weightMeters");
                 }
 
-                edges.add(new Edge(from.trim(), to.trim(), dist));
+                // 策略相关的可选列：爬升、换乘次数、景色评分（缺省为 0，不影响原有逻辑）
+                Double climb = readDoubleOrNull(row, index, "climb_meters");
+                if (climb == null) {
+                    climb = readDoubleOrNull(row, index, "climbMeters");
+                }
+                Integer transfers = readIntOrNull(row, index, "transfers");
+                Double scenic = readDoubleOrNull(row, index, "scenic_score");
+                if (scenic == null) {
+                    scenic = readDoubleOrNull(row, index, "scenicScore");
+                }
+
+                edges.add(new Edge(from.trim(), to.trim(), dist, climb, transfers, scenic));
             }
 
             return edges;
@@ -170,6 +181,18 @@ public class DataLoader {
         }
         try {
             return Double.parseDouble(raw);
+        } catch (NumberFormatException e) {
+            return null;
+        }
+    }
+
+    private static Integer readIntOrNull(String[] row, Map<String, Integer> index, String key) {
+        String raw = readColOrNull(row, index, key);
+        if (raw == null || raw.isBlank()) {
+            return null;
+        }
+        try {
+            return Integer.parseInt(raw);
         } catch (NumberFormatException e) {
             return null;
         }

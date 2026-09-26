@@ -10,6 +10,16 @@ export type TravelNode = {
   desc?: string;
 };
 
+export type RouteStrategyKey = "shortest" | "fastest" | "less-climb" | "less-transfer" | "photo";
+
+export const STRATEGIES: Array<{ key: RouteStrategyKey; name: string; hint: string }> = [
+  { key: "shortest", name: "最短距离", hint: "按地理距离规划（默认）" },
+  { key: "fastest", name: "省时间", hint: "优先总耗时最短的路线" },
+  { key: "less-climb", name: "少爬坡", hint: "尽量避开上坡路段" },
+  { key: "less-transfer", name: "少换乘", hint: "尽量减少换乘次数" },
+  { key: "photo", name: "适合拍照", hint: "优先经过高颜值景点" },
+];
+
 export type PathResult = {
   startId: string;
   endId: string;
@@ -17,6 +27,11 @@ export type PathResult = {
   pathNodeIds: string[];
   pathNodes: TravelNode[];
   segmentDistanceMeters: number[];
+  strategy?: string;
+  strategyName?: string;
+  totalTimeMinutes?: number;
+  totalClimbMeters?: number;
+  totalTransfers?: number;
 };
 
 type State = {
@@ -24,6 +39,7 @@ type State = {
   nodesLoading: boolean;
   startId?: string;
   endId?: string;
+  strategy: RouteStrategyKey;
   route?: PathResult;
   routeLoading: boolean;
   selectedNodeId?: string;
@@ -33,6 +49,7 @@ type Actions = {
   loadNodes: () => Promise<void>;
   setStartId: (id?: string) => void;
   setEndId: (id?: string) => void;
+  setStrategy: (s: RouteStrategyKey) => void;
   swap: () => void;
   clear: () => void;
   setSelectedNodeId: (id?: string) => void;
@@ -44,6 +61,7 @@ const apiBase = import.meta.env.VITE_API_BASE || "/api";
 export const useTravelStore = create<State & Actions>((set, get) => ({
   nodes: [],
   nodesLoading: false,
+  strategy: "shortest",
   routeLoading: false,
 
   loadNodes: async () => {
@@ -77,6 +95,16 @@ export const useTravelStore = create<State & Actions>((set, get) => ({
   setEndId: (id) => set({ endId: id, route: undefined }),
   setSelectedNodeId: (id) => set({ selectedNodeId: id }),
 
+  setStrategy: (strategy) => {
+    const { strategy: prev, route, startId, endId } = get();
+    if (prev === strategy) return;
+    set({ strategy, route: undefined });
+    // 已有规划结果时切换策略立即重算，保证展示与策略一致
+    if (route && startId && endId) {
+      void get().fetchRoute();
+    }
+  },
+
   swap: () => {
     const { startId, endId } = get();
     set({ startId: endId, endId: startId, route: undefined });
@@ -85,14 +113,14 @@ export const useTravelStore = create<State & Actions>((set, get) => ({
   clear: () => set({ startId: undefined, endId: undefined, route: undefined, selectedNodeId: undefined }),
 
   fetchRoute: async () => {
-    const { startId, endId } = get();
+    const { startId, endId, strategy } = get();
     if (!startId || !endId) {
       notification.warning({ message: "请选择起点与终点" });
       return;
     }
     set({ routeLoading: true });
     try {
-      const qs = new URLSearchParams({ from: startId, to: endId });
+      const qs = new URLSearchParams({ from: startId, to: endId, strategy });
       const res = await fetch(`${apiBase}/path?${qs.toString()}`);
       const data = await res.json();
       if (!res.ok) {
